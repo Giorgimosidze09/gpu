@@ -68,6 +68,12 @@ func main() {
 	go scheduler.Start(ctx)
 	defer scheduler.Stop()
 
+	// Phase 4: Initialize autoscaler (if cluster pool is used)
+	// TODO: Initialize cluster pool and connect autoscaler
+	// clusterPool := resource_manager.NewClusterPool(...)
+	// autoscaler := scheduler.NewAutoScaler(clusterPool, scheduler.GetQueue())
+	// go autoscaler.Start(ctx)
+
 	// Setup routes with database and scheduler
 	r := mux.NewRouter()
 	routes.SetupRoutes(r, db, scheduler)

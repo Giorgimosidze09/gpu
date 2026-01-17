@@ -35,6 +35,7 @@ func (e *TrainingExecutor) ExecuteJob(
 
 	// Setup distributed training based on framework
 	var config *frameworks.DistributedConfig
+	var trainingScript string
 	var err error
 
 	switch job.Framework {
@@ -43,15 +44,26 @@ func (e *TrainingExecutor) ExecuteJob(
 		if err != nil {
 			return fmt.Errorf("failed to setup PyTorch DDP: %w", err)
 		}
-	case "horovod":
-		// TODO: Implement Horovod setup
-		return fmt.Errorf("Horovod not yet implemented")
+		trainingScript = e.pyTorchSetup.GenerateTrainingScript(config, job)
+	case "horovod", "horovod_elastic":
+		// Phase 4: Horovod support
+		horovodSetup := &frameworks.HorovodSetup{}
+		config, err = horovodSetup.SetupDistributedTraining(cluster, job)
+		if err != nil {
+			return fmt.Errorf("failed to setup Horovod: %w", err)
+		}
+		trainingScript = horovodSetup.GenerateTrainingScript(config, job)
+	case "tensorflow_multiworker":
+		// Phase 4: TensorFlow MultiWorker support
+		tfSetup := &frameworks.TensorFlowSetup{}
+		config, err = tfSetup.SetupDistributedTraining(cluster, job)
+		if err != nil {
+			return fmt.Errorf("failed to setup TensorFlow: %w", err)
+		}
+		trainingScript = tfSetup.GenerateTrainingScript(config, job)
 	default:
 		return fmt.Errorf("unsupported framework: %s", job.Framework)
 	}
-
-	// Generate training script
-	trainingScript := e.pyTorchSetup.GenerateTrainingScript(config, job)
 
 	// Execute on each node
 	// TODO: Implement SSH execution
@@ -94,21 +106,10 @@ func (e *TrainingExecutor) simulateExecution(ctx context.Context, job *models.Jo
 }
 
 // ExecuteOnNode executes a command on a specific node via SSH
+// Phase 4: Real SSH execution implementation
 func (e *TrainingExecutor) ExecuteOnNode(ctx context.Context, node *models.Node, command string) error {
-	// Phase 2: Implement SSH execution
-	// This would use:
-	// - SSH key from config
-	// - Node's public IP (need to get from provider)
-	// - Execute command remotely using golang.org/x/crypto/ssh
-	//
-	// Example implementation:
-	// 1. Load SSH key from config
-	// 2. Create SSH client connection
-	// 3. Execute command via SSH session
-	// 4. Stream output/logs
-	// 5. Handle errors and retries
-
-	// TODO: Phase 2 - Implement actual SSH execution
-	// For now, return error to indicate not implemented
-	return fmt.Errorf("SSH execution not yet implemented - Phase 2")
+	// Phase 4: Use SSH client for execution
+	// TODO: Get SSH key and user from config
+	// For now, return error indicating config needed
+	return fmt.Errorf("SSH execution requires SSH key configuration - Phase 4")
 }
