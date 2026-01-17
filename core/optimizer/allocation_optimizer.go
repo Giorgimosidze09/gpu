@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"gpu-orchestrator/core/models"
@@ -106,8 +107,14 @@ func (ao *AllocationOptimizer) generateStrategies(
 
 	case models.ModeMultiTask:
 		// Multi-task strategies: Can distribute across providers/regions
-		// For MVP, we focus on single-cluster only
-		// This will be implemented in Phase 2
+		// Strategy 1: Cheapest overall (distribute tasks)
+		strategies = append(strategies, ao.cheapestMultiProviderStrategy(candidates, requirements, constraints))
+
+		// Strategy 2: Geographic distribution (for parallel tasks)
+		strategies = append(strategies, ao.geoDistributedTaskStrategy(candidates, requirements, constraints))
+
+		// Strategy 3: On-prem first, cloud backup
+		strategies = append(strategies, ao.hybridTaskStrategy(candidates, requirements, constraints))
 	}
 
 	return strategies
@@ -255,6 +262,15 @@ func (ao *AllocationOptimizer) filterMultiNodeCompatible(
 	return filtered
 }
 
+// parseRegionKey parses a region key (format: "provider:region") into provider and region
+func parseRegionKey(key string) (models.Provider, string) {
+	parts := strings.Split(key, ":")
+	if len(parts) != 2 {
+		return models.ProviderAWS, "us-east-1" // Default
+	}
+	return models.Provider(parts[0]), parts[1]
+}
+
 // getMaxNodesForProvider returns max nodes per cluster/AZ for provider+region
 func (ao *AllocationOptimizer) getMaxNodesForProvider(provider models.Provider, region string) int {
 	// Provider-specific limits (region can be used for region-specific quotas in future)
@@ -274,24 +290,157 @@ func (ao *AllocationOptimizer) getMaxNodesForProvider(provider models.Provider, 
 }
 
 func (ao *AllocationOptimizer) reliableSingleRegionStrategy(
-	_ []models.GPUInstance,
-	_ models.JobRequirements,
-	_ models.JobConstraints,
+	candidates []models.GPUInstance,
+	requirements models.JobRequirements,
+	constraints models.JobConstraints,
 ) Strategy {
-	// Similar to cheapest, but prefer on-demand and on-prem
-	// TODO: Implement
-	return Strategy{}
+	// Phase 2: Prefer on-demand and on-premise for reliability
+	// Filter out spot instances and prefer on-premise
+
+	// Filter candidates: prefer on-demand and on-premise
+	reliableCandidates := []models.GPUInstance{}
+	for _, instance := range candidates {
+		// Prefer on-premise
+		if instance.Provider == models.ProviderOnPrem {
+			reliableCandidates = append(reliableCandidates, instance)
+			continue
+		}
+		// Prefer on-demand (no spot)
+		// Note: We can't filter by spot here since GPUInstance doesn't have spot flag
+		// But we can prefer instances with higher availability
+		if instance.Availability >= 0.95 { // High availability = likely on-demand
+			reliableCandidates = append(reliableCandidates, instance)
+		}
+	}
+
+	// If no reliable candidates, fall back to all candidates
+	if len(reliableCandidates) == 0 {
+		reliableCandidates = candidates
+	}
+
+	// Use cheapest strategy but with reliable candidates
+	// Group by provider+region (single-cluster requirement)
+	regionGroups := make(map[string][]models.GPUInstance)
+	for _, instance := range reliableCandidates {
+		key := fmt.Sprintf("%s:%s", instance.Provider, instance.Region)
+		regionGroups[key] = append(regionGroups[key], instance)
+	}
+
+	// Find cheapest reliable provider+region combination
+	var bestStrategy Strategy
+	bestCost := 999999.0
+
+	for regionKey, instances := range regionGroups {
+		regionStrategy := ao.cheapestStrategy(instances, requirements, constraints)
+		if regionStrategy.TotalCost < bestCost && len(regionStrategy.Allocation) > 0 {
+			bestCost = regionStrategy.TotalCost
+			bestStrategy = regionStrategy
+
+			// Verify all allocations are in same provider+region
+			provider, region := parseRegionKey(regionKey)
+			for _, alloc := range regionStrategy.Allocation {
+				if alloc.Provider != provider || alloc.Region != region {
+					bestCost = 999999.0
+					break
+				}
+			}
+		}
+	}
+
+	return bestStrategy
 }
 
 func (ao *AllocationOptimizer) dataLocalityStrategy(
-	_ []models.GPUInstance,
-	_ models.JobRequirements,
-	_ models.JobConstraints,
+	candidates []models.GPUInstance,
+	requirements models.JobRequirements,
+	constraints models.JobConstraints,
 ) Strategy {
-	// Prefer region where dataset exists
-	// TODO: Parse dataset URI to extract provider/region
-	// TODO: Implement
-	return Strategy{}
+	// Phase 2: Prefer region where dataset exists
+	// Parse dataset URI to extract provider/region
+
+	datasetProvider, datasetRegion := parseDatasetLocation(requirements.DatasetLocation)
+
+	// Filter candidates to prefer dataset region
+	preferredCandidates := []models.GPUInstance{}
+	otherCandidates := []models.GPUInstance{}
+
+	for _, instance := range candidates {
+		// Exact match: same provider and region
+		if instance.Provider == datasetProvider && instance.Region == datasetRegion {
+			preferredCandidates = append(preferredCandidates, instance)
+		} else if instance.Provider == datasetProvider {
+			// Same provider, different region (still better than different provider)
+			otherCandidates = append(otherCandidates, instance)
+		} else {
+			// Different provider (least preferred)
+			otherCandidates = append(otherCandidates, instance)
+		}
+	}
+
+	// Try preferred candidates first
+	if len(preferredCandidates) > 0 {
+		// Group by provider+region (single-cluster requirement)
+		regionGroups := make(map[string][]models.GPUInstance)
+		for _, instance := range preferredCandidates {
+			key := fmt.Sprintf("%s:%s", instance.Provider, instance.Region)
+			regionGroups[key] = append(regionGroups[key], instance)
+		}
+
+		// Find cheapest in preferred region
+		var bestStrategy Strategy
+		bestCost := 999999.0
+
+		for _, instances := range regionGroups {
+			regionStrategy := ao.cheapestStrategy(instances, requirements, constraints)
+			if regionStrategy.TotalCost < bestCost && len(regionStrategy.Allocation) > 0 {
+				bestCost = regionStrategy.TotalCost
+				bestStrategy = regionStrategy
+			}
+		}
+
+		if len(bestStrategy.Allocation) > 0 {
+			return bestStrategy
+		}
+	}
+
+	// Fall back to other candidates if preferred region doesn't work
+	if len(otherCandidates) > 0 {
+		return ao.cheapestSingleRegionStrategy(otherCandidates, requirements, constraints)
+	}
+
+	// Last resort: use all candidates
+	return ao.cheapestSingleRegionStrategy(candidates, requirements, constraints)
+}
+
+// parseDatasetLocation extracts provider and region from dataset URI
+// Supports: s3://bucket/path, gs://bucket/path, az://container/path, minio://endpoint/bucket/path
+func parseDatasetLocation(uri string) (models.Provider, string) {
+	// Phase 2: Parse URI to extract provider and region
+	// For now, use simple parsing
+
+	if len(uri) < 5 {
+		return models.ProviderAWS, "us-east-1" // Default
+	}
+
+	scheme := uri[:5] // s3://, gs://, az://, minio://
+
+	switch {
+	case scheme == "s3://":
+		// AWS S3 - default to us-east-1 (can be enhanced to detect bucket region)
+		return models.ProviderAWS, "us-east-1"
+	case scheme == "gs://":
+		// GCP GCS - default to us-central1
+		return models.ProviderGCP, "us-central1"
+	case scheme == "az://":
+		// Azure Blob - default to eastus
+		return models.ProviderAzure, "eastus"
+	case scheme == "minio":
+		// MinIO (on-premise) - no specific region
+		return models.ProviderOnPrem, ""
+	default:
+		// Default to AWS
+		return models.ProviderAWS, "us-east-1"
+	}
 }
 
 func (ao *AllocationOptimizer) scoreStrategies(
@@ -361,12 +510,7 @@ func (ao *AllocationOptimizer) scoreStrategies(
 }
 
 // Helper functions
-func parseRegionKey(key string) (models.Provider, string) {
-	// Format: "provider:region"
-	// TODO: Implement proper parsing
-	_ = key // Reserved for future parsing implementation
-	return models.ProviderAWS, "us-east-1"
-}
+// parseRegionKey is defined above (line 266)
 
 func parseProviderFromLocation(location string) models.Provider {
 	// Parse URI scheme: s3:// -> aws, gs:// -> gcp, az:// -> azure, minio:// -> onprem

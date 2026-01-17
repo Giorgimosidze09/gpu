@@ -13,14 +13,14 @@ import (
 
 // TrainingExecutor executes training jobs on provisioned instances
 type TrainingExecutor struct {
-	jobRepo    *repository.JobRepository
+	jobRepo      *repository.JobRepository
 	pyTorchSetup *frameworks.PyTorchSetup
 }
 
 // NewTrainingExecutor creates a new training executor
 func NewTrainingExecutor(jobRepo *repository.JobRepository) *TrainingExecutor {
 	return &TrainingExecutor{
-		jobRepo:     jobRepo,
+		jobRepo:      jobRepo,
 		pyTorchSetup: &frameworks.PyTorchSetup{},
 	}
 }
@@ -68,9 +68,9 @@ func (e *TrainingExecutor) ExecuteJob(
 func (e *TrainingExecutor) simulateExecution(ctx context.Context, job *models.Job, cluster *models.Cluster) {
 	// Simulate training time
 	estimatedDuration := time.Duration(job.Requirements.EstimatedHours * float64(time.Hour))
-	
+
 	log.Printf("Simulating training execution for job %s (estimated: %v)", job.ID, estimatedDuration)
-	
+
 	// For testing, use shorter duration
 	testDuration := 30 * time.Second
 	if estimatedDuration < testDuration {
@@ -95,10 +95,20 @@ func (e *TrainingExecutor) simulateExecution(ctx context.Context, job *models.Jo
 
 // ExecuteOnNode executes a command on a specific node via SSH
 func (e *TrainingExecutor) ExecuteOnNode(ctx context.Context, node *models.Node, command string) error {
-	// TODO: Implement SSH execution
+	// Phase 2: Implement SSH execution
 	// This would use:
 	// - SSH key from config
-	// - Node's public IP
-	// - Execute command remotely
-	return fmt.Errorf("SSH execution not yet implemented")
+	// - Node's public IP (need to get from provider)
+	// - Execute command remotely using golang.org/x/crypto/ssh
+	//
+	// Example implementation:
+	// 1. Load SSH key from config
+	// 2. Create SSH client connection
+	// 3. Execute command via SSH session
+	// 4. Stream output/logs
+	// 5. Handle errors and retries
+
+	// TODO: Phase 2 - Implement actual SSH execution
+	// For now, return error to indicate not implemented
+	return fmt.Errorf("SSH execution not yet implemented - Phase 2")
 }
