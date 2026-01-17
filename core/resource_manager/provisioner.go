@@ -33,6 +33,7 @@ func NewProvisioner(
 }
 
 // ProvisionCluster provisions a cluster for a job
+// Phase 3: Supports both VM and Kubernetes backends
 func (p *Provisioner) ProvisionCluster(
 	ctx context.Context,
 	job *models.Job,
@@ -50,6 +51,35 @@ func (p *Provisioner) ProvisionCluster(
 			return nil, fmt.Errorf("single-cluster mode requires all allocations in same provider+region")
 		}
 	}
+
+	// Phase 3: Determine backend type
+	backend := job.SelectedBackend
+	if backend == "" {
+		backend = models.BackendVM // Default to VM for backward compatibility
+	}
+
+	// Route to appropriate backend
+	switch backend {
+	case models.BackendKubernetes:
+		return p.provisionKubernetesCluster(ctx, job, allocations)
+	case models.BackendVM:
+		return p.provisionVMCluster(ctx, job, allocations)
+	case models.BackendSlurm:
+		return nil, fmt.Errorf("Slurm backend not yet implemented")
+	case models.BackendRay:
+		return nil, fmt.Errorf("Ray backend not yet implemented")
+	default:
+		return nil, fmt.Errorf("unsupported backend: %s", backend)
+	}
+}
+
+// provisionVMCluster provisions a VM-based cluster (Phase 1/2)
+func (p *Provisioner) provisionVMCluster(
+	ctx context.Context,
+	job *models.Job,
+	allocations []models.Allocation,
+) (*models.Cluster, error) {
+	firstAlloc := allocations[0]
 
 	// Provision instances based on provider
 	var nodes []models.Node
@@ -103,6 +133,17 @@ func (p *Provisioner) ProvisionCluster(
 	}
 
 	return cluster, nil
+}
+
+// provisionKubernetesCluster provisions a Kubernetes cluster (Phase 3)
+func (p *Provisioner) provisionKubernetesCluster(
+	ctx context.Context,
+	job *models.Job,
+	allocations []models.Allocation,
+) (*models.Cluster, error) {
+	// Phase 3: Use Kubernetes backend
+	k8sBackend := NewKubernetesBackend()
+	return k8sBackend.ProvisionCluster(ctx, job, allocations)
 }
 
 // provisionAWS provisions AWS EC2 instances

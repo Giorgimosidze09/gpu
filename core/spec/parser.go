@@ -27,11 +27,14 @@ type JobSpecJob struct {
 
 // JobSpecResources represents resource requirements
 type JobSpecResources struct {
-	GPUs              int    `yaml:"gpus"`
-	MaxGPUsPerNode    int    `yaml:"max_gpus_per_node"`
-	RequiresMultiNode bool   `yaml:"requires_multi_node"`
-	GPUMemory         string `yaml:"gpu_memory"` // e.g., "80GB"
-	CPUMemory         string `yaml:"cpu_memory"` // e.g., "512GB"
+	GPUs              int      `yaml:"gpus"`
+	GPUFraction       *float64 `yaml:"gpu_fraction,omitempty"` // Phase 3: Fractional GPU (0.0-1.0)
+	UseMIG            *bool    `yaml:"use_mig,omitempty"`     // Phase 3: Enable MIG
+	MIGProfile        *string  `yaml:"mig_profile,omitempty"` // Phase 3: MIG profile (e.g., "1g.10gb")
+	MaxGPUsPerNode    int      `yaml:"max_gpus_per_node"`
+	RequiresMultiNode bool     `yaml:"requires_multi_node"`
+	GPUMemory         string   `yaml:"gpu_memory"` // e.g., "80GB"
+	CPUMemory         string   `yaml:"cpu_memory"` // e.g., "512GB"
 }
 
 // JobSpecData represents data configuration
@@ -52,7 +55,8 @@ type JobSpecConstraints struct {
 
 // JobSpecExecution represents execution configuration
 type JobSpecExecution struct {
-	Mode string `yaml:"mode"` // single_cluster | multi_task
+	Mode   string `yaml:"mode"`              // single_cluster | multi_task
+	Backend string `yaml:"backend,omitempty"` // Phase 3: k8s | vm | slurm | ray (default: vm)
 }
 
 // ParseJobSpec parses a YAML job specification into a Job model
@@ -72,11 +76,26 @@ func ParseJobSpec(specYAML string) (*models.Job, error) {
 	}
 
 	// Parse resources
+	// Phase 3: Support GPU sharing (fractional GPUs, MIG)
+	gpuFraction := 1.0
+	if spec.Job.Resources.GPUFraction != nil {
+		gpuFraction = *spec.Job.Resources.GPUFraction
+	}
+	
+	useMIG := false
+	migProfile := ""
+	if spec.Job.Resources.UseMIG != nil {
+		useMIG = *spec.Job.Resources.UseMIG
+	}
+	if spec.Job.Resources.MIGProfile != nil {
+		migProfile = *spec.Job.Resources.MIGProfile
+	}
+	
 	job.Requirements = models.JobRequirements{
 		GPUs:              spec.Job.Resources.GPUs,
-		GPUFraction:       1.0,   // MVP: Always full GPU (fractional support in Phase 2)
-		UseMIG:            false, // MVP: No MIG support (add in Phase 2)
-		MIGProfile:        "",    // MVP: No MIG support
+		GPUFraction:       gpuFraction, // Phase 3: Support fractional GPUs
+		UseMIG:            useMIG,     // Phase 3: Support MIG
+		MIGProfile:        migProfile,  // Phase 3: MIG profile
 		MaxGPUsPerNode:    spec.Job.Resources.MaxGPUsPerNode,
 		RequiresMultiNode: spec.Job.Resources.RequiresMultiNode,
 		GPUMemory:         parseMemoryGB(spec.Job.Resources.GPUMemory),
@@ -93,6 +112,13 @@ func ParseJobSpec(specYAML string) (*models.Job, error) {
 	} else {
 		// Auto-detect based on framework
 		job.Requirements.ExecutionMode = detectExecutionMode(spec.Job.Framework, spec.Job.Type)
+	}
+	
+	// Phase 3: Parse backend type
+	if spec.Job.Execution.Backend != "" {
+		job.SelectedBackend = models.BackendType(spec.Job.Execution.Backend)
+	} else {
+		job.SelectedBackend = models.BackendVM // Default to VM
 	}
 
 	// Parse constraints
